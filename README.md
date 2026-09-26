@@ -1,4 +1,4 @@
-# ANT — Aplicación (PWA) v1.2.0
+# ANT — Aplicación (PWA) v1.2.1
 
 Interfaz de ANT para tablet y teléfono. Se conecta al backend de Apps Script cuya URL
 está en `js/config.js`.

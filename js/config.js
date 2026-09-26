@@ -3,7 +3,7 @@
 // dentro de la misma implementación, no cambia.
 export const CONFIG = Object.freeze({
   API_URL: 'https://script.google.com/macros/s/AKfycbxwjekrLH26kzH3I30wIQgGNa0iIkCvBrhezHlHgXI227uR-pnTjHK8drOtaXWeLSM/exec',
-  VERSION: '1.2.0',
+  VERSION: '1.2.1',
   TIEMPO_ESPERA_MS: 45000,
   AVISO_INACTIVIDAD_S: 60
 });
