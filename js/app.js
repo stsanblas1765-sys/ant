@@ -3,6 +3,7 @@
 // (función el()), nunca con innerHTML.
 import { CONFIG } from './config.js';
 import { llamar, Sesion, ErrorApi } from './api.js';
+import { Cola } from './cola.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -202,8 +203,12 @@ function mostrarVista(nombre) {
 }
 
 function cerrarLocal(mensaje) {
+  if (Grabadora.activo) Grabadora.detener();
+  ColaAudio.detener();
   Inactividad.detener();
   limpiarDatosPersonas();
+  cacheAudios.forEach(url => URL.revokeObjectURL(url));
+  cacheAudios.clear();
   Sesion.borrar();
   $$('dialog[open]').forEach(d => d.close());
   mostrarVista('login');
@@ -211,6 +216,7 @@ function cerrarLocal(mensaje) {
 }
 
 async function salir() {
+  if (Grabadora.activo) await Grabadora.detener();
   const token = Sesion.token;
   cerrarLocal('');
   // Se cierra en servidor sin esperar: la sesión local ya se borró.
@@ -228,10 +234,12 @@ function entrar() {
   mostrarVista('app');
   mostrarPanel(Sesion.tiene('USUARIO_APROBAR') ? 'solicitudes' : 'inicio');
   Inactividad.iniciar();
+  ColaAudio.iniciar();
 }
 
 function mostrarPanel(nombre) {
-  const pestana = nombre === 'ficha' || nombre === 'ficha-nueva' ? 'personas' : nombre;
+  if (Grabadora.activo && nombre !== 'entrevista') { notificar('Detén la grabación antes de salir de esta pantalla.', 'error'); return; }
+  const pestana = ['ficha', 'ficha-nueva', 'entrevista'].includes(nombre) ? 'personas' : nombre;
   $$('.pestana').forEach(p => { if (p.dataset.panel === pestana) p.setAttribute('aria-current', 'page'); else p.removeAttribute('aria-current'); });
   $$('.panel-vista').forEach(p => { p.hidden = p.id !== 'p-' + nombre; });
   window.scrollTo(0, 0);
@@ -274,6 +282,7 @@ const Inactividad = {
   },
   revisar() {
     if (!Sesion.datos) return this.detener();
+    if (Grabadora.activo) this.ultimaInteraccion = Date.now();
     const limite = (Sesion.datos.inactividadMin || 30) * 60000;
     const restante = limite - (Date.now() - this.ultimaInteraccion);
     if (restante <= 0) { cerrarLocal('Tu sesión se cerró por inactividad.'); return; }
@@ -439,10 +448,10 @@ function pintarInicio() {
   } else {
     const disponibles = [
       ['Personas', 'Fichas con fotografía, incidente, testigo y huellas', 'personas'],
-      ['Reporte de persona', 'PDF con el formato del Grupo Antinarcóticos', 'personas']
+      ['Reporte de persona', 'PDF con el formato del Grupo Antinarcóticos', 'personas'],
+      ['Entrevistas', 'Audio por tramos desde la ficha, con respaldo sin señal', 'personas']
     ];
     const pendientes = [
-      ['Entrevistas', 'Grabación de audio por segmentos'],
       ['Relaciones', 'Vínculos entre personas, vehículos y domicilios'],
       ['Línea de tiempo', 'Historia completa de cada expediente']
     ];
@@ -1014,6 +1023,7 @@ async function abrirFicha(idPersona, idExpediente) {
     const r = await api('fichas.obtener', { idPersona, idExpediente });
     fichaActual = r.data;
     pintarHoja(r.data);
+    cargarEntrevistas(r.data.expediente.idExpediente);
   } catch (e) {
     if (!e.manejado) hoja.replaceChildren(el('p', { class: 'hoja-cargando' }, e.message));
   }
@@ -1124,6 +1134,360 @@ function enlazarPersonas() {
   $('#btn-reporte').addEventListener('click', generarReporte);
 }
 
+// ───────────────────────── Entrevistas con audio ─────────────────────────
+
+const TRAMO_MS = 5 * 60 * 1000;
+const cacheAudios = new Map();
+const ERRORES_REINTENTABLES = ['SIN_CONEXION', 'TIEMPO_AGOTADO', 'ERROR_SERVIDOR', 'RESPUESTA_INVALIDA', 'LIMITE_EXCEDIDO',
+  'BLOQUEO_TIMEOUT', 'MANTENIMIENTO', 'ERROR_INTERNO', 'CLIENTE_DESACTUALIZADO'];
+
+function duracionTexto(seg) {
+  seg = Math.max(0, Math.round(seg || 0));
+  const h = Math.floor(seg / 3600), m = Math.floor((seg % 3600) / 60), s = seg % 60;
+  const dos = x => String(x).padStart(2, '0');
+  return h ? h + ':' + dos(m) + ':' + dos(s) : m + ':' + dos(s);
+}
+
+async function sha256Hex(buf) {
+  const h = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Sube en orden lo que quedó en el respaldo local. Se reintenta solo. */
+const ColaAudio = {
+  corriendo: false,
+  intervalo: null,
+  iniciar() {
+    clearInterval(this.intervalo);
+    this.intervalo = setInterval(() => this.procesar(), 60000);
+    this.procesar();
+  },
+  detener() { clearInterval(this.intervalo); this.intervalo = null; $('#aviso-pendientes').hidden = true; },
+  uid() { return Sesion.datos && Sesion.datos.usuario ? Sesion.datos.usuario.ID_USUARIO : ''; },
+  async procesar() {
+    if (this.corriendo || !Sesion.token || !navigator.onLine) { this.pintar(); return; }
+    this.corriendo = true;
+    try {
+      const uid = this.uid();
+      const tareas = (await Cola.listar()).filter(t => t.idUsuario === uid && !t.error);
+      for (const t of tareas) {
+        try {
+          if (t.tipo === 'segmento') {
+            const audio = await Cola.audio(t);
+            await api('entrevistas.subirSegmento', Object.assign({ idEntrevista: t.idEntrevista, base64: base64DeBuffer(audio) }, t.datos), { tiempo: 180000 });
+          } else {
+            await api('entrevistas.finalizar', Object.assign({ idEntrevista: t.idEntrevista }, t.datos));
+          }
+          await Cola.quitar(t.id);
+          this.pintar();
+        } catch (e) {
+          if (e.manejado || ERRORES_REINTENTABLES.includes(e.codigo)) break; // se reintenta más tarde
+          await Cola.marcarError(t.id, e.message);
+        }
+      }
+    } catch (e) {
+      /* respaldo local no disponible: nada que subir */
+    } finally {
+      this.corriendo = false;
+      this.pintar();
+    }
+  },
+  async pintar() {
+    const franja = $('#aviso-pendientes');
+    const uid = this.uid();
+    if (!uid) { franja.hidden = true; return; }
+    let tareas = [];
+    try { tareas = (await Cola.listar()).filter(t => t.idUsuario === uid && t.tipo === 'segmento'); } catch (e) { /* sin respaldo */ }
+    const conError = tareas.filter(t => t.error).length;
+    const pendientes = tareas.length - conError;
+    Grabadora.pendientes = pendientes;
+    Grabadora.pintar();
+    if (!tareas.length) { franja.hidden = true; return; }
+    const partes = [];
+    if (pendientes) partes.push(pendientes === 1 ? '1 tramo de audio pendiente de subir.' : pendientes + ' tramos de audio pendientes de subir.');
+    if (conError) partes.push(conError === 1 ? '1 tramo no se pudo subir.' : conError + ' tramos no se pudieron subir.');
+    $('#pendientes-texto').textContent = partes.join(' ');
+    $('#btn-reintentar').hidden = !pendientes;
+    $('#btn-respaldo').hidden = !conError;
+    franja.hidden = false;
+  },
+  /** Descarga en claro los tramos que el servidor rechazó, para no perderlos. */
+  async descargarRespaldo() {
+    const uid = this.uid();
+    const conError = (await Cola.listar()).filter(t => t.idUsuario === uid && t.tipo === 'segmento' && t.error);
+    for (const t of conError) {
+      const audio = await Cola.audio(t);
+      const ext = { 'audio/mp4': '.m4a', 'audio/webm': '.webm', 'audio/ogg': '.ogg' }[t.datos.mime] || '.audio';
+      const url = URL.createObjectURL(new Blob([audio], { type: t.datos.mime }));
+      const a = el('a', { href: url, download: t.idEntrevista + '_T' + String(t.datos.segmento).padStart(3, '0') + ext });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+    notificar('Se descargaron ' + conError.length + ' tramo(s). Entrégalos al supervisor para integrarlos al expediente.', 'exito');
+  }
+};
+
+const Grabadora = {
+  activo: false, stream: null, grabador: null, mime: '', tipo: '', entrevista: null, idUsuario: '',
+  tramo: 0, ultimoGuardado: 0, guardados: 0, pendientes: 0, inicio: 0, corte: null, reloj: null,
+  cierres: [], bloqueoPantalla: null, audioCtx: null, analizador: null, cuadro: null,
+
+  elegirMime() {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+    return ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+  },
+
+  async prepararMicrofono() {
+    this.mime = this.elegirMime();
+    if (!this.mime || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('Este navegador no permite grabar audio. Usa Safari en iPhone o Chrome en Android, actualizados.');
+    }
+    await Cola.verificar();
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      throw new Error(e && e.name === 'NotAllowedError'
+        ? 'No diste permiso al micrófono. Actívalo en los ajustes del navegador para este sitio e intenta de nuevo.'
+        : 'No se pudo usar el micrófono (' + ((e && e.name) || 'error') + ').');
+    }
+  },
+
+  async comenzar(stream, entrevista) {
+    Object.assign(this, { stream, entrevista, activo: true, tramo: 0, ultimoGuardado: 0, guardados: 0, cierres: [], inicio: Date.now() });
+    this.tipo = this.mime.split(';')[0];
+    this.idUsuario = Sesion.datos.usuario.ID_USUARIO;
+    const pista = stream.getAudioTracks()[0];
+    if (pista) pista.addEventListener('ended', () => { if (this.activo) { notificar('El micrófono se detuvo. Se guardó lo grabado hasta ese momento.', 'error'); this.detener(); } });
+    await this.mantenerPantalla();
+    this.medidor();
+    this.nuevoTramo();
+    this.reloj = setInterval(() => this.pintar(), 500);
+    this.pintar();
+  },
+
+  async mantenerPantalla() {
+    try { if ('wakeLock' in navigator) this.bloqueoPantalla = await navigator.wakeLock.request('screen'); } catch (e) { this.bloqueoPantalla = null; }
+  },
+
+  medidor() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    try {
+      this.audioCtx = new Ctx();
+      this.analizador = this.audioCtx.createAnalyser();
+      this.analizador.fftSize = 512;
+      this.audioCtx.createMediaStreamSource(this.stream).connect(this.analizador);
+      const datos = new Uint8Array(this.analizador.fftSize);
+      const barra = $('#nivel-barra');
+      const paso = () => {
+        if (!this.activo) { barra.style.width = '0'; return; }
+        this.analizador.getByteTimeDomainData(datos);
+        let suma = 0;
+        for (let i = 0; i < datos.length; i++) { const v = (datos[i] - 128) / 128; suma += v * v; }
+        barra.style.width = Math.min(100, Math.round(Math.sqrt(suma / datos.length) * 300)) + '%';
+        this.cuadro = requestAnimationFrame(paso);
+      };
+      paso();
+    } catch (e) { this.audioCtx = null; }
+  },
+
+  nuevoTramo() {
+    const n = ++this.tramo;
+    const partes = [];
+    const inicio = Date.now();
+    const g = new MediaRecorder(this.stream, { mimeType: this.mime, audioBitsPerSecond: 48000 });
+    g.ondataavailable = e => { if (e.data && e.data.size) partes.push(e.data); };
+    this.cierres.push(new Promise(ok => { g.onstop = () => ok(this.guardarTramo(n, partes, inicio, Date.now())); }));
+    g.start(1000);
+    this.grabador = g;
+    clearTimeout(this.corte);
+    this.corte = setTimeout(() => this.cortar(), TRAMO_MS);
+  },
+
+  /** Cierra el tramo actual y abre el siguiente sin detener el micrófono. */
+  cortar() {
+    const anterior = this.grabador;
+    if (this.activo) this.nuevoTramo();
+    if (anterior && anterior.state !== 'inactive') anterior.stop();
+  },
+
+  async guardarTramo(n, partes, inicio, fin) {
+    try {
+      const buf = await new Blob(partes, { type: this.tipo }).arrayBuffer();
+      if (!buf.byteLength) return;
+      await Cola.agregar({
+        tipo: 'segmento', idUsuario: this.idUsuario, idEntrevista: this.entrevista.idEntrevista,
+        datos: { segmento: n, mime: this.tipo, sha256: await sha256Hex(buf), duracionS: Math.round((fin - inicio) / 1000), capturadoEn: new Date(inicio).toISOString() }
+      }, buf);
+      this.guardados++;
+      this.ultimoGuardado = Math.max(this.ultimoGuardado, n);
+      ColaAudio.procesar();
+    } catch (e) {
+      notificar('No se pudo guardar el tramo ' + n + ' en el dispositivo: ' + e.message, 'error');
+    }
+  },
+
+  async detener() {
+    if (!this.activo) return;
+    this.activo = false;
+    clearTimeout(this.corte);
+    clearInterval(this.reloj);
+    if (this.cuadro) cancelAnimationFrame(this.cuadro);
+    const g = this.grabador;
+    if (g && g.state !== 'inactive') g.stop();
+    await Promise.all(this.cierres);
+    this.stream.getTracks().forEach(t => t.stop());
+    try { if (this.bloqueoPantalla) await this.bloqueoPantalla.release(); } catch (e) { /* ya liberado */ }
+    try { if (this.audioCtx) await this.audioCtx.close(); } catch (e) { /* ya cerrado */ }
+    const duracion = (Date.now() - this.inicio) / 1000;
+    if (this.ultimoGuardado) {
+      await Cola.agregar({ tipo: 'finalizar', idUsuario: this.idUsuario, idEntrevista: this.entrevista.idEntrevista,
+        datos: { numSegmentos: this.ultimoGuardado, fin: new Date().toISOString() } });
+    }
+    ColaAudio.procesar();
+    return { tramos: this.ultimoGuardado, duracion };
+  },
+
+  pintar() {
+    if (!this.activo) return;
+    $('#cronometro').textContent = (() => {
+      const s = Math.floor((Date.now() - this.inicio) / 1000);
+      return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map(x => String(x).padStart(2, '0')).join(':');
+    })();
+    $('#grabando-detalle').textContent = 'Tramo ' + this.tramo + '. Guardados en el dispositivo: ' + this.guardados +
+      (this.pendientes ? '. Pendientes de subir: ' + this.pendientes + '.' : '. Todo lo guardado ya se subió.');
+  }
+};
+
+function abrirEntrevista() {
+  if (!fichaActual) return;
+  const form = $('#f-entrevista');
+  form.reset();
+  limpiarErrores(form);
+  const sel = $('#en-persona');
+  sel.replaceChildren(...fichaActual.personasExpediente.map(p =>
+    el('option', { value: p.idPersona, selected: p.idPersona === fichaActual.persona.idPersona }, nombrePropio(p.nombre) + ' (' + p.calidad.toLowerCase() + ')')));
+  $('#ent-contexto').textContent = 'Expediente ' + fichaActual.expediente.folio + '.';
+  form.hidden = false;
+  $('#grabando').hidden = true;
+  $('#grabacion-fin').hidden = true;
+  mostrarPanel('entrevista');
+}
+
+async function iniciarEntrevista(ev) {
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  limpiarErrores(form);
+  let ok = requeridos(form);
+  if (!$('#en-constancia').checked) { errorCampo(form, 'constancia', 'Confirma que informaste a la persona.'); ok = false; }
+  if (!ok) return;
+  await conCarga($('button[type=submit]', form), async () => {
+    let stream = null;
+    try {
+      stream = await Grabadora.prepararMicrofono();
+      const r = await api('entrevistas.iniciar', {
+        idExpediente: fichaActual.expediente.idExpediente, idPersona: form.elements.idPersona.value,
+        lugar: form.elements.lugar.value, observaciones: form.elements.observaciones.value, constancia: true
+      });
+      await Grabadora.comenzar(stream, { idEntrevista: r.data.idEntrevista });
+      form.hidden = true;
+      $('#grabando').hidden = false;
+    } catch (e) {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      if (e instanceof ErrorApi) mostrarError(form, e);
+      else mensajeForm(form, e.message);
+    }
+  });
+}
+
+async function detenerEntrevista(ev) {
+  await conCarga(ev.currentTarget, async () => {
+    const r = await Grabadora.detener();
+    $('#grabando').hidden = true;
+    $('#grabacion-resumen').textContent = r && r.tramos
+      ? 'Duración ' + duracionTexto(r.duracion) + ' en ' + r.tramos + (r.tramos === 1 ? ' tramo' : ' tramos') +
+        '. El audio está guardado en el dispositivo y se sube automáticamente; puedes seguir trabajando.'
+      : 'No se grabó audio.';
+    $('#grabacion-fin').hidden = false;
+  });
+}
+
+async function cargarEntrevistas(idExpediente) {
+  const cont = $('#lista-entrevistas');
+  cont.replaceChildren(el('p', { class: 'texto-2' }, 'Cargando entrevistas…'));
+  try {
+    const r = await api('entrevistas.listar', { idExpediente });
+    const lista = r.data.entrevistas;
+    if (!lista.length) { cont.replaceChildren(el('p', { class: 'texto-2' }, 'Sin entrevistas grabadas.')); return; }
+    cont.replaceChildren(...lista.map(pintarEntrevista));
+  } catch (e) {
+    if (!e.manejado) cont.replaceChildren(el('p', { class: 'texto-2' }, e.message));
+  }
+}
+
+function pintarEntrevista(e) {
+  const reproductor = el('audio', { controls: true, preload: 'none', hidden: true });
+  reproductor.addEventListener('error', () => {
+    if (reproductor.getAttribute('src')) notificar('Este dispositivo no puede reproducir este formato de audio. Escúchalo desde una computadora o desde el tipo de dispositivo con que se grabó.', 'error');
+  });
+  const estados = { EN_CURSO: 'En curso', INCOMPLETA: 'Tramos pendientes', FINALIZADA: 'Completa' };
+  const puedeOir = Sesion.tiene('AUDIO_ESCUCHAR');
+  const tramos = e.tramos.map(t => el('button', {
+    type: 'button', class: 'tramo', disabled: !puedeOir,
+    onclick: async ev => {
+      const b = ev.currentTarget;
+      $$('.tramo.sonando').forEach(x => x.classList.remove('sonando'));
+      b.classList.add('sonando');
+      try {
+        let url = cacheAudios.get(t.idArchivo);
+        if (!url) {
+          const r = await api('entrevistas.audio', { idArchivo: t.idArchivo }, { tiempo: 120000 });
+          url = URL.createObjectURL(new Blob([bytesDeBase64(r.data.base64)], { type: r.data.mime }));
+          cacheAudios.set(t.idArchivo, url);
+        }
+        reproductor.src = url;
+        reproductor.hidden = false;
+        reproductor.play().catch(() => {});
+      } catch (err) {
+        b.classList.remove('sonando');
+        if (!err.manejado) notificar(err.message, 'error');
+      }
+    }
+  }, 'Tramo ' + t.numero + ' · ' + duracionTexto(t.duracionS)));
+  const faltan = e.tramosDeclarados ? e.tramosDeclarados - e.tramos.length : 0;
+  return el('div', { class: 'entrevista' },
+    el('div', { class: 'fila-nombre' }, nombrePropio(e.persona),
+      el('span', { class: 'estado ' + (e.estado === 'FINALIZADA' ? 'estado-ACTIVO' : 'estado-SUSPENDIDO') }, estados[e.estado] || e.estado)),
+    el('div', { class: 'fila-datos' },
+      el('span', {}, e.calidad),
+      el('span', {}, fecha(e.inicio)),
+      el('span', {}, 'Duración ' + duracionTexto(e.duracionS)),
+      e.lugar ? el('span', {}, e.lugar) : null,
+      el('span', {}, 'Entrevistó ' + nombrePropio(e.entrevistador))),
+    tramos.length ? el('div', { class: 'tramos' }, tramos) : null,
+    faltan > 0 || e.estado === 'EN_CURSO'
+      ? el('p', { class: 'escuchas' }, e.esMia ? 'Hay tramos que aún se están subiendo desde tu dispositivo.' : 'Hay tramos pendientes de subir desde el dispositivo de quien grabó.')
+      : null,
+    !puedeOir && tramos.length ? el('p', { class: 'escuchas' }, 'Tu rol no tiene permiso para escuchar entrevistas.') : null,
+    reproductor,
+    e.escuchadaPor.length ? el('p', { class: 'escuchas' }, 'Escuchada por: ' + e.escuchadaPor.map(x => nombrePropio(x.nombre) + ' (' + haceCuanto(x.fecha) + ')').join(', ')) : null);
+}
+
+function enlazarEntrevistas() {
+  $('#btn-nueva-entrevista').addEventListener('click', abrirEntrevista);
+  $('#f-entrevista').addEventListener('submit', iniciarEntrevista);
+  $('#btn-detener').addEventListener('click', detenerEntrevista);
+  const volver = () => { if (fichaActual) abrirFicha(fichaActual.persona.idPersona, fichaActual.expediente.idExpediente); else mostrarPanel('personas'); };
+  $('#btn-fin-entrevista').addEventListener('click', volver);
+  $('#btn-volver-entrevista').addEventListener('click', volver);
+  $('#btn-reintentar').addEventListener('click', () => ColaAudio.procesar());
+  $('#btn-respaldo').addEventListener('click', () => ColaAudio.descargarRespaldo().catch(e => notificar(e.message, 'error')));
+  window.addEventListener('online', () => ColaAudio.procesar());
+  window.addEventListener('beforeunload', ev => { if (Grabadora.activo) { ev.preventDefault(); ev.returnValue = ''; } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && Grabadora.activo) Grabadora.mantenerPantalla(); });
+}
+
 // ───────────────────────── Arranque ─────────────────────────
 
 function enlazarEventos() {
@@ -1156,6 +1520,7 @@ function enlazarEventos() {
 
   $('#inicio-solicitudes').addEventListener('click', () => mostrarPanel('solicitudes'));
   enlazarPersonas();
+  enlazarEntrevistas();
   $('#buscar-usuario').addEventListener('input', pintarUsuarios);
 
   $$('ul.politica').forEach(ul => {

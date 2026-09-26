@@ -394,3 +394,25 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .modulos li.modulo-activo { padding: 0; border-style: solid; border-color: var(--borde-fuerte); background: rgba(91, 157, 255, 0.08); }
 .modulo-boton { display: flex; flex-direction: column; gap: 2px; width: 100%; height: 100%; padding: 14px 16px; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 14px; }
 .modulo-boton small { color: var(--texto-2); font-size: 13px; }
+
+/* ───────── Entrevistas ───────── */
+.titulo-chico { font-size: 18px; }
+.bloque-entrevistas { padding: calc(var(--paso) * 2.5) calc(var(--paso) * 3); display: flex; flex-direction: column; gap: 12px; max-width: 860px; width: 100%; margin: 0 auto; }
+.entrevista { border-top: 1px solid rgba(88, 150, 255, 0.12); padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.entrevista:first-child { border-top: 0; padding-top: 0; }
+.tramos { display: flex; flex-wrap: wrap; gap: 8px; }
+.tramo { min-height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--borde); background: rgba(4, 8, 16, 0.5); color: var(--texto); font-size: 13.5px; font-weight: 600; cursor: pointer; font-variant-numeric: tabular-nums; }
+.tramo:hover, .tramo.sonando { border-color: var(--electrico); background: rgba(91, 157, 255, 0.14); }
+.entrevista audio { width: 100%; height: 40px; }
+.escuchas { font-size: 13px; color: var(--texto-3); }
+.casilla { display: flex !important; gap: 12px; align-items: flex-start; font-size: 15px !important; color: var(--texto) !important; font-weight: 500 !important; cursor: pointer; }
+.casilla input { width: 22px; height: 22px; min-height: 0; margin: 1px 0 0; flex: none; accent-color: var(--carmesi); }
+.nota { font-size: 13.5px; color: var(--texto-2); background: rgba(200, 161, 74, 0.08); border: 1px solid rgba(200, 161, 74, 0.35); border-radius: 12px; padding: 12px 14px; }
+
+.grabando { padding: calc(var(--paso) * 4) calc(var(--paso) * 3); display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center; border-color: rgba(194, 58, 75, 0.55); }
+.grabando-estado { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-size: 13px; color: var(--carmesi-claro); }
+.punto-rojo { width: 14px; height: 14px; border-radius: 50%; background: var(--carmesi); box-shadow: 0 0 0 0 rgba(194, 58, 75, 0.7); animation: latido 1.4s infinite; }
+@keyframes latido { 70% { box-shadow: 0 0 0 14px rgba(194, 58, 75, 0); } 100% { box-shadow: 0 0 0 0 rgba(194, 58, 75, 0); } }
+.cronometro { font-size: clamp(44px, 12vw, 72px); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; line-height: 1; }
+.nivel { width: min(320px, 80%); height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+#nivel-barra { height: 100%; width: 0; background: var(--esmeralda-claro); transition: width 0.08s linear; }

@@ -1,7 +1,7 @@
 // ANT — service worker.
 // Guarda solo la interfaz (HTML, CSS, JS, íconos, fuente) para que abra rápido y
 // sin señal. NUNCA guarda respuestas del servidor: los datos no quedan en caché.
-const VERSION = 'ant-v1.1.0';
+const VERSION = 'ant-v1.2.0';
 const ARCHIVOS = [
   './',
   './index.html',
@@ -10,6 +10,7 @@ const ARCHIVOS = [
   './js/app.js',
   './js/api.js',
   './js/config.js',
+  './js/cola.js',
   './assets/logo.png',
   './assets/fonts/inter-latin-wght-normal.woff2',
   './assets/fonts/inter-latin-ext-wght-normal.woff2',

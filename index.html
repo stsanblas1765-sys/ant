@@ -28,6 +28,11 @@
     Hay una versión nueva de ANT.
     <button type="button" id="btn-actualizar" class="enlace">Actualizar ahora</button>
   </div>
+  <div id="aviso-pendientes" class="franja franja-info" hidden>
+    <span id="pendientes-texto"></span>
+    <button type="button" id="btn-reintentar" class="enlace">Reintentar ahora</button>
+    <button type="button" id="btn-respaldo" class="enlace" hidden>Guardar copia en el dispositivo</button>
+  </div>
   <div id="aviso-inactividad" class="franja franja-alerta" hidden>
     Tu sesión se cerrará en <strong id="cuenta-regresiva">60</strong> s por inactividad.
     <button type="button" id="btn-seguir" class="enlace">Seguir trabajando</button>
@@ -319,7 +324,58 @@
           <button type="button" class="boton boton-primario boton-chico" id="btn-reporte" data-requiere="REPORTE_GENERAR" hidden>Generar reporte PDF</button>
         </div>
         <article id="hoja" class="hoja" aria-live="polite"></article>
+        <section class="panel bloque-entrevistas" aria-labelledby="titulo-entrevistas">
+          <div class="cabecera-panel">
+            <h3 class="titulo titulo-chico" id="titulo-entrevistas">Entrevistas</h3>
+            <button type="button" class="boton boton-primario boton-chico" id="btn-nueva-entrevista" data-requiere="AUDIO_GRABAR" hidden>Nueva entrevista</button>
+          </div>
+          <div id="lista-entrevistas" aria-live="polite"></div>
+        </section>
         <input type="file" accept="image/*" id="in-ficha-archivo" class="visualmente-oculto" aria-label="Agregar imagen a la ficha">
+      </div>
+
+      <!-- Grabación de entrevista -->
+      <div id="p-entrevista" class="panel-vista" hidden>
+        <div class="cabecera-panel">
+          <h2 class="titulo">Nueva entrevista</h2>
+          <button type="button" class="boton boton-fantasma boton-chico" id="btn-volver-entrevista">Volver a la ficha</button>
+        </div>
+        <p class="texto-2" id="ent-contexto"></p>
+        <form id="f-entrevista" class="panel formulario" novalidate>
+          <div class="campo">
+            <label for="en-persona">Persona entrevistada</label>
+            <select id="en-persona" name="idPersona" required></select>
+          </div>
+          <div class="campo">
+            <label for="en-lugar">Lugar</label>
+            <input id="en-lugar" name="lugar" maxlength="150" required autocomplete="off" placeholder="Base, domicilio, vía pública…">
+          </div>
+          <div class="campo">
+            <label for="en-obs">Observaciones <span class="opcional">opcional</span></label>
+            <textarea id="en-obs" name="observaciones" rows="2" maxlength="500"></textarea>
+          </div>
+          <div class="campo">
+            <label class="casilla"><input type="checkbox" name="constancia" id="en-constancia"> <span>Informé a la persona que esta entrevista se graba en audio.</span></label>
+          </div>
+          <p class="nota">Mientras grabas, mantén la app abierta y la pantalla encendida: si bloqueas el teléfono o cambias de app, el micrófono se detiene. Si se pierde la señal no pasa nada; el audio queda guardado en el dispositivo y se sube solo después.</p>
+          <p class="mensaje-form" role="alert" hidden></p>
+          <button type="submit" class="boton boton-peligro boton-ancho">Iniciar grabación</button>
+        </form>
+
+        <div id="grabando" class="panel grabando" hidden>
+          <div class="grabando-estado"><span class="punto-rojo" aria-hidden="true"></span><span>Grabando</span></div>
+          <div class="cronometro" id="cronometro" role="timer" aria-live="off">00:00:00</div>
+          <div class="nivel" aria-hidden="true"><div id="nivel-barra"></div></div>
+          <p class="texto-2" id="grabando-detalle">Tramo 1</p>
+          <button type="button" class="boton boton-peligro boton-ancho" id="btn-detener">Detener y guardar</button>
+        </div>
+
+        <div id="grabacion-fin" class="panel panel-mensaje" hidden>
+          <div class="sello sello-ok" aria-hidden="true"></div>
+          <h3 class="titulo">Grabación guardada</h3>
+          <p id="grabacion-resumen"></p>
+          <button type="button" class="boton boton-secundario boton-ancho" id="btn-fin-entrevista">Volver a la ficha</button>
+        </div>
       </div>
 
       <!-- Solicitudes -->
