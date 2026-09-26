@@ -190,6 +190,7 @@
     </header>
     <nav class="pestanas" aria-label="Secciones">
       <button type="button" class="pestana" data-panel="inicio">Inicio</button>
+      <button type="button" class="pestana" data-panel="personas" data-requiere="PER_BUSCAR" hidden>Personas</button>
       <button type="button" class="pestana" data-panel="solicitudes" data-requiere="USUARIO_APROBAR" hidden>Solicitudes <span class="contador" id="contador-solicitudes" hidden></span></button>
       <button type="button" class="pestana" data-panel="usuarios" data-requiere="USUARIO_ADMIN" hidden>Usuarios</button>
       <button type="button" class="pestana" data-panel="cuenta">Mi cuenta</button>
@@ -203,6 +204,122 @@
         <button type="button" class="panel aviso-accion" id="inicio-solicitudes" hidden></button>
         <h3 class="subtitulo">Módulos</h3>
         <ul class="modulos" id="inicio-modulos"></ul>
+      </div>
+
+      <!-- Personas: búsqueda y lista -->
+      <div id="p-personas" class="panel-vista" hidden>
+        <div class="cabecera-panel">
+          <h2 class="titulo">Personas</h2>
+          <button type="button" class="boton boton-primario boton-chico" data-panel="ficha-nueva" data-requiere="EXP_CREAR" hidden>Nueva ficha</button>
+        </div>
+        <form id="f-buscar" class="buscador" role="search" novalidate>
+          <input id="buscar-persona" name="texto" type="search" placeholder="Nombre, alias, teléfono o folio" aria-label="Buscar persona" autocomplete="off">
+          <button type="submit" class="boton boton-secundario">Buscar</button>
+        </form>
+        <div id="lista-personas" class="lista" aria-live="polite"></div>
+      </div>
+
+      <!-- Nueva ficha -->
+      <div id="p-ficha-nueva" class="panel-vista" hidden>
+        <div class="cabecera-panel">
+          <h2 class="titulo">Nueva ficha</h2>
+          <button type="button" class="boton boton-fantasma boton-chico" data-panel="personas">Cancelar</button>
+        </div>
+        <form id="f-ficha" class="formulario-ficha" novalidate>
+          <fieldset class="panel seccion">
+            <legend>Persona</legend>
+            <div class="seccion-persona">
+              <div class="foto-slot" data-subtipo="CUERPO_COMPLETO">
+                <input type="file" accept="image/*" id="in-foto" class="visualmente-oculto">
+                <label for="in-foto" class="foto-marco foto-marco-alto"><img alt="Fotografía de la persona" hidden><span>Tomar o elegir fotografía</span></label>
+                <button type="button" class="enlace quitar-foto" hidden>Quitar</button>
+              </div>
+              <div class="seccion-campos">
+                <div class="campo"><label for="fi-nombre">Nombre(s)</label><input id="fi-nombre" name="nombre" maxlength="60" required autocomplete="off"></div>
+                <div class="rejilla-2">
+                  <div class="campo"><label for="fi-ap">Apellido paterno</label><input id="fi-ap" name="apellidoPaterno" maxlength="40" required autocomplete="off"></div>
+                  <div class="campo"><label for="fi-am">Apellido materno <span class="opcional">opcional</span></label><input id="fi-am" name="apellidoMaterno" maxlength="40" autocomplete="off"></div>
+                </div>
+                <div class="rejilla-3">
+                  <div class="campo"><label for="fi-fn">Fecha de nacimiento</label><input id="fi-fn" name="fechaNacimiento" type="date" min="1900-01-01"></div>
+                  <div class="campo"><label for="fi-sexo">Sexo</label><select id="fi-sexo" name="sexo"><option value="">Sin dato</option></select></div>
+                  <div class="campo"><label for="fi-tel">Teléfono</label><input id="fi-tel" name="telefono" type="tel" inputmode="numeric" maxlength="20" autocomplete="off"></div>
+                </div>
+                <div class="rejilla-2">
+                  <div class="campo"><label for="fi-alias">Alias <span class="opcional">opcional</span></label><input id="fi-alias" name="alias" maxlength="60" autocomplete="off"></div>
+                  <div class="campo"><label for="fi-curp">CURP <span class="opcional">opcional</span></label><input id="fi-curp" name="curp" maxlength="18" autocapitalize="characters" autocomplete="off"></div>
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="panel seccion">
+            <legend>Domicilio</legend>
+            <div class="rejilla-3">
+              <div class="campo"><label for="fi-calle">Calle y número</label><input id="fi-calle" name="calle" maxlength="120" autocomplete="off"></div>
+              <div class="campo"><label for="fi-col">Colonia</label><input id="fi-col" name="colonia" maxlength="80" autocomplete="off"></div>
+              <div class="campo"><label for="fi-mund">Municipio</label><select id="fi-mund" name="municipioDomicilio" data-catalogo="municipios"></select></div>
+            </div>
+          </fieldset>
+
+          <fieldset class="panel seccion">
+            <legend>Detalles del incidente</legend>
+            <div class="rejilla-3">
+              <div class="campo"><label for="fi-tipo">Tipo de incidente</label><select id="fi-tipo" name="tipoIncidente" required data-catalogo="tiposIncidente"></select></div>
+              <div class="campo"><label for="fi-fecha">Fecha</label><input id="fi-fecha" name="fechaIncidente" type="date" required></div>
+              <div class="campo"><label for="fi-hora">Hora</label><input id="fi-hora" name="horaIncidente" type="time"></div>
+            </div>
+            <div class="campo"><label for="fi-desc">Descripción</label><textarea id="fi-desc" name="descripcion" rows="3" maxlength="1000" required placeholder="Qué ocurrió, cómo y por qué medio"></textarea></div>
+            <div class="rejilla-2">
+              <div class="campo"><label for="fi-muni">Municipio</label><select id="fi-muni" name="municipioIncidente" required data-catalogo="municipios"></select></div>
+              <div class="campo">
+                <label for="fi-ubic">Ubicación</label>
+                <input id="fi-ubic" name="ubicacion" maxlength="200" placeholder="Calle, cruce o referencia" autocomplete="off">
+                <div class="gps"><button type="button" class="enlace" id="btn-gps">Agregar mi ubicación actual</button><small id="gps-texto" class="ayuda"></small></div>
+              </div>
+            </div>
+            <input type="hidden" name="latitud" id="fi-lat"><input type="hidden" name="longitud" id="fi-lng">
+          </fieldset>
+
+          <fieldset class="panel seccion">
+            <legend>Datos del testigo <span class="opcional">opcional</span></legend>
+            <div class="rejilla-2">
+              <div class="campo"><label for="fi-tnom">Nombre</label><input id="fi-tnom" name="testigoNombre" maxlength="120" autocomplete="off"></div>
+              <div class="campo"><label for="fi-trel">Relación</label><input id="fi-trel" name="testigoRelacion" maxlength="60" autocomplete="off" placeholder="Vecino, familiar, empleado…"></div>
+            </div>
+            <div class="campo"><label for="fi-tdec">Declaración</label><textarea id="fi-tdec" name="testigoDeclaracion" rows="4" maxlength="3000"></textarea></div>
+          </fieldset>
+
+          <fieldset class="panel seccion">
+            <legend>Huellas dactilares <span class="opcional">opcional</span></legend>
+            <div class="rejilla-2">
+              <div class="foto-slot" data-subtipo="HUELLA_PULGAR_IZQ">
+                <input type="file" accept="image/*" id="in-hizq" class="visualmente-oculto">
+                <label for="in-hizq" class="foto-marco"><img alt="Pulgar izquierdo" hidden><span>Pulgar izquierdo</span></label>
+                <button type="button" class="enlace quitar-foto" hidden>Quitar</button>
+              </div>
+              <div class="foto-slot" data-subtipo="HUELLA_PULGAR_DER">
+                <input type="file" accept="image/*" id="in-hder" class="visualmente-oculto">
+                <label for="in-hder" class="foto-marco"><img alt="Pulgar derecho" hidden><span>Pulgar derecho</span></label>
+                <button type="button" class="enlace quitar-foto" hidden>Quitar</button>
+              </div>
+            </div>
+          </fieldset>
+
+          <p class="mensaje-form" role="alert" hidden></p>
+          <p class="progreso" id="ficha-progreso" aria-live="polite" hidden></p>
+          <button type="submit" class="boton boton-primario boton-ancho">Guardar ficha</button>
+        </form>
+      </div>
+
+      <!-- Ficha (vista tipo reporte) -->
+      <div id="p-ficha" class="panel-vista" hidden>
+        <div class="cabecera-panel">
+          <button type="button" class="boton boton-fantasma boton-chico" data-panel="personas">Volver a personas</button>
+          <button type="button" class="boton boton-primario boton-chico" id="btn-reporte" data-requiere="REPORTE_GENERAR" hidden>Generar reporte PDF</button>
+        </div>
+        <article id="hoja" class="hoja" aria-live="polite"></article>
+        <input type="file" accept="image/*" id="in-ficha-archivo" class="visualmente-oculto" aria-label="Agregar imagen a la ficha">
       </div>
 
       <!-- Solicitudes -->
@@ -353,6 +470,19 @@
       <div class="acciones-dialogo">
         <button type="button" class="boton boton-fantasma" id="btn-copiar-temporal">Copiar</button>
         <button type="button" class="boton boton-primario" data-cerrar>Listo</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Diálogo: posibles duplicados -->
+  <dialog id="dlg-duplicados" class="dialogo">
+    <div class="formulario">
+      <h2 class="titulo">Posible persona ya registrada</h2>
+      <p class="texto-2">Revisa si alguno de estos registros es la misma persona. Si lo es, no crees otra ficha.</p>
+      <div id="lista-duplicados" class="lista lista-compacta"></div>
+      <div class="acciones-dialogo">
+        <button type="button" class="boton boton-fantasma" data-cerrar>Revisar de nuevo</button>
+        <button type="button" class="boton boton-primario" id="btn-confirmar-nueva">Es otra persona, guardar</button>
       </div>
     </div>
   </dialog>

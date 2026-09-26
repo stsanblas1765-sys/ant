@@ -166,9 +166,9 @@ function passwordCumple(pwd, usuario) { return reglasPassword(pwd, usuario).ever
 
 // ───────────────────────── Llamadas con manejo global ─────────────────────────
 
-async function api(accion, datos) {
+async function api(accion, datos, opciones) {
   try {
-    const r = await llamar(accion, datos);
+    const r = await llamar(accion, datos, opciones);
     Inactividad.llamadaHecha();
     return r;
   } catch (e) {
@@ -203,6 +203,7 @@ function mostrarVista(nombre) {
 
 function cerrarLocal(mensaje) {
   Inactividad.detener();
+  limpiarDatosPersonas();
   Sesion.borrar();
   $$('dialog[open]').forEach(d => d.close());
   mostrarVista('login');
@@ -223,16 +224,20 @@ function entrar() {
   const u = d.usuario;
   $('#app-nombre').textContent = nombreCompleto(u);
   $('#app-rol').textContent = (ROLES[u.ROL] || { nombre: u.ROL }).nombre + (u.ES_MAESTRO ? ' (maestro)' : '');
-  $$('.pestana[data-requiere]').forEach(p => { p.hidden = !Sesion.tiene(p.dataset.requiere); });
+  $$('[data-requiere]').forEach(p => { p.hidden = !Sesion.tiene(p.dataset.requiere); });
   mostrarVista('app');
   mostrarPanel(Sesion.tiene('USUARIO_APROBAR') ? 'solicitudes' : 'inicio');
   Inactividad.iniciar();
 }
 
 function mostrarPanel(nombre) {
-  $$('.pestana').forEach(p => { if (p.dataset.panel === nombre) p.setAttribute('aria-current', 'page'); else p.removeAttribute('aria-current'); });
+  const pestana = nombre === 'ficha' || nombre === 'ficha-nueva' ? 'personas' : nombre;
+  $$('.pestana').forEach(p => { if (p.dataset.panel === pestana) p.setAttribute('aria-current', 'page'); else p.removeAttribute('aria-current'); });
   $$('.panel-vista').forEach(p => { p.hidden = p.id !== 'p-' + nombre; });
+  window.scrollTo(0, 0);
   if (nombre === 'inicio') pintarInicio();
+  if (nombre === 'personas') cargarPersonas($('#buscar-persona').value);
+  if (nombre === 'ficha-nueva') prepararFicha();
   if (nombre === 'solicitudes') cargarSolicitudes();
   if (nombre === 'usuarios') cargarUsuarios();
   if (nombre === 'cuenta') pintarCuenta();
@@ -432,15 +437,19 @@ function pintarInicio() {
   if (!operativo) {
     lista.replaceChildren(el('li', {}, el('strong', {}, 'Tu rol administra accesos'), el('small', {}, 'Por diseño no consulta expedientes ni personas.')));
   } else {
-    const modulos = [
-      ['Expedientes', 'Folio, intervención y línea de tiempo'],
-      ['Personas', 'Registro y búsqueda con detección de duplicados'],
-      ['Fotografías y documentos', 'Captura con cámara y resguardo en Drive'],
-      ['Entrevistas', 'Grabación de audio por segmentos'],
-      ['Relaciones', 'Vínculos con fuente y verificación'],
-      ['Reportes', 'PDF con código de verificación']
+    const disponibles = [
+      ['Personas', 'Fichas con fotografía, incidente, testigo y huellas', 'personas'],
+      ['Reporte de persona', 'PDF con el formato del Grupo Antinarcóticos', 'personas']
     ];
-    lista.replaceChildren(...modulos.map(([t, d]) => el('li', {}, el('strong', {}, t), el('small', {}, d + '. Disponible en la siguiente fase.'))));
+    const pendientes = [
+      ['Entrevistas', 'Grabación de audio por segmentos'],
+      ['Relaciones', 'Vínculos entre personas, vehículos y domicilios'],
+      ['Línea de tiempo', 'Historia completa de cada expediente']
+    ];
+    lista.replaceChildren(
+      ...disponibles.map(([t, d, panel]) => el('li', { class: 'modulo-activo' },
+        el('button', { type: 'button', class: 'modulo-boton', onclick: () => mostrarPanel(panel) }, el('strong', {}, t), el('small', {}, d)))),
+      ...pendientes.map(([t, d]) => el('li', {}, el('strong', {}, t), el('small', {}, d + '. Disponible en la siguiente fase.'))));
   }
   if (Sesion.tiene('USUARIO_APROBAR')) actualizarContadorSolicitudes();
 }
@@ -722,6 +731,399 @@ function recargarActual() {
   if (actual) mostrarPanel(actual.dataset.panel);
 }
 
+// ───────────────────────── Personas ─────────────────────────
+
+let catalogosCaptura = null;
+let fichaActual = null;
+let subtipoPendiente = null;
+const imagenesFicha = new Map();   // subtipo → { base64, sha, vista, capturadoEn } (captura en curso)
+const cacheImagenes = new Map();   // idArchivo → URL blob (vista de fichas)
+
+const ETIQUETA_SUBTIPO = {
+  CUERPO_COMPLETO: 'fotografía', ROSTRO_FRONTAL: 'fotografía',
+  HUELLA_PULGAR_IZQ: 'huella del pulgar izquierdo', HUELLA_PULGAR_DER: 'huella del pulgar derecho'
+};
+
+function limpiarDatosPersonas() {
+  fichaActual = null;
+  catalogosCaptura = null;
+  cacheImagenes.forEach(url => URL.revokeObjectURL(url));
+  cacheImagenes.clear();
+  if ($('#f-ficha')) reiniciarFicha();
+  if ($('#hoja')) $('#hoja').replaceChildren();
+  if ($('#lista-personas')) $('#lista-personas').replaceChildren();
+  if ($('#buscar-persona')) $('#buscar-persona').value = '';
+}
+
+function hoyLocal() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Monterrey', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function iniciales(nombre) {
+  return String(nombre || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(p => p.charAt(0)).join('').toUpperCase();
+}
+
+function base64DeBuffer(buf) {
+  const b = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+function bytesDeBase64(b64) {
+  return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+}
+
+/** Reduce la imagen a 1600 px como máximo, la convierte a JPEG y calcula su SHA-256. */
+async function procesarImagen(archivo) {
+  if (!/^image\//.test(archivo.type || 'image/')) throw new Error('El archivo no es una imagen.');
+  const origen = URL.createObjectURL(archivo);
+  try {
+    const img = await new Promise((ok, falla) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => falla(new Error('No se pudo leer la imagen. Intenta con otra fotografía.'));
+      i.src = origen;
+    });
+    const max = 1600;
+    const escala = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * escala));
+    const h = Math.max(1, Math.round(img.naturalHeight * escala));
+    const lienzo = document.createElement('canvas');
+    lienzo.width = w; lienzo.height = h;
+    lienzo.getContext('2d').drawImage(img, 0, 0, w, h);
+    const blob = await new Promise(ok => lienzo.toBlob(ok, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('No se pudo procesar la imagen.');
+    const buf = await blob.arrayBuffer();
+    const hash = await crypto.subtle.digest('SHA-256', buf);
+    return {
+      base64: base64DeBuffer(buf),
+      sha: Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join(''),
+      vista: URL.createObjectURL(blob),
+      capturadoEn: new Date().toISOString()
+    };
+  } finally {
+    URL.revokeObjectURL(origen);
+  }
+}
+
+async function subirImagen(idExpediente, idPersona, subtipo, img) {
+  return api('archivos.subir', { idExpediente, idPersona, subtipo, mime: 'image/jpeg', base64: img.base64, sha256: img.sha, capturadoEn: img.capturadoEn }, { tiempo: 90000 });
+}
+
+// Lista y búsqueda
+async function cargarPersonas(texto) {
+  const cont = $('#lista-personas');
+  cargando(cont);
+  try {
+    const r = await api('fichas.buscar', { texto: texto || '' });
+    const lista = r.data.resultados;
+    if (!lista.length) {
+      cont.replaceChildren(el('div', { class: 'vacio' }, texto
+        ? 'Ninguna persona coincide con “' + texto + '”. Revisa la ortografía o busca por teléfono o folio.'
+        : (Sesion.tiene('EXP_CREAR') ? 'Aún no hay fichas. Crea la primera con “Nueva ficha”.' : 'Aún no hay fichas a tu alcance.')));
+      return;
+    }
+    cont.replaceChildren(...lista.map(p => el('button', { type: 'button', class: 'fila fila-persona', onclick: () => abrirFicha(p.idPersona, p.idExpediente) },
+      el('div', { class: 'fila-cabeza' },
+        el('span', { class: 'iniciales', 'aria-hidden': 'true' }, iniciales(p.nombre)),
+        el('div', {},
+          el('div', { class: 'fila-nombre' }, nombrePropio(p.nombre)),
+          el('div', { class: 'fila-datos' },
+            el('span', { class: 'num' }, p.folio),
+            p.tipo ? el('span', {}, p.tipo) : null,
+            p.fechaIncidente ? el('span', {}, p.fechaIncidente) : null,
+            p.tieneFoto ? null : el('span', {}, 'Sin fotografía')))))));
+  } catch (e) {
+    if (!e.manejado) cont.replaceChildren(el('div', { class: 'vacio' }, e.message));
+  }
+}
+
+// Captura
+function llenarSelect(sel, items, valor, textoVacio) {
+  if (sel.dataset.lleno) return;
+  sel.replaceChildren(el('option', { value: '' }, textoVacio), ...items.map(i => el('option', { value: i.clave, selected: i.clave === valor }, i.valor)));
+  sel.dataset.lleno = '1';
+}
+
+async function prepararFicha() {
+  const form = $('#f-ficha');
+  const hoy = hoyLocal();
+  form.elements.fechaIncidente.max = hoy;
+  form.elements.fechaNacimiento.max = hoy;
+  if (!form.elements.fechaIncidente.value) form.elements.fechaIncidente.value = hoy;
+  try {
+    if (!catalogosCaptura) catalogosCaptura = (await api('catalogos.captura', {})).data;
+    llenarSelect($('#fi-sexo'), catalogosCaptura.sexos, '', 'Sin dato');
+    llenarSelect($('#fi-tipo'), catalogosCaptura.tiposIncidente, '', 'Selecciona');
+    llenarSelect($('#fi-muni'), catalogosCaptura.municipios, '05030', 'Selecciona');
+    llenarSelect($('#fi-mund'), catalogosCaptura.municipios, '', 'Mismo del incidente');
+  } catch (e) {
+    if (!e.manejado) mensajeForm(form, e.message);
+  }
+}
+
+function limpiarSlot(slot) {
+  const previa = imagenesFicha.get(slot.dataset.subtipo);
+  if (previa) URL.revokeObjectURL(previa.vista);
+  imagenesFicha.delete(slot.dataset.subtipo);
+  const img = $('img', slot);
+  img.removeAttribute('src');
+  img.hidden = true;
+  $('.foto-marco', slot).classList.remove('con-imagen');
+  $('.quitar-foto', slot).hidden = true;
+}
+
+function enlazarFotoSlot(slot) {
+  const input = $('input[type=file]', slot);
+  const marco = $('.foto-marco', slot);
+  const img = $('img', marco);
+  input.addEventListener('change', async () => {
+    const archivo = input.files[0];
+    input.value = '';
+    if (!archivo) return;
+    try {
+      const procesada = await procesarImagen(archivo);
+      limpiarSlot(slot);
+      imagenesFicha.set(slot.dataset.subtipo, procesada);
+      img.src = procesada.vista;
+      img.hidden = false;
+      marco.classList.add('con-imagen');
+      $('.quitar-foto', slot).hidden = false;
+    } catch (e) {
+      notificar(e.message, 'error');
+    }
+  });
+  $('.quitar-foto', slot).addEventListener('click', () => limpiarSlot(slot));
+}
+
+function reiniciarFicha() {
+  const form = $('#f-ficha');
+  form.reset();
+  limpiarErrores(form);
+  $$('.foto-slot', form).forEach(limpiarSlot);
+  $('#fi-lat').value = '';
+  $('#fi-lng').value = '';
+  $('#gps-texto').textContent = '';
+  $('#ficha-progreso').hidden = true;
+  form.elements.fechaIncidente.value = hoyLocal();
+}
+
+function obtenerUbicacion() {
+  const texto = $('#gps-texto');
+  if (!navigator.geolocation) { notificar('Este dispositivo no permite obtener la ubicación.', 'error'); return; }
+  texto.textContent = 'Obteniendo ubicación…';
+  navigator.geolocation.getCurrentPosition(pos => {
+    $('#fi-lat').value = pos.coords.latitude.toFixed(6);
+    $('#fi-lng').value = pos.coords.longitude.toFixed(6);
+    texto.textContent = 'Ubicación agregada (precisión aproximada ' + Math.round(pos.coords.accuracy) + ' m).';
+  }, err => {
+    texto.textContent = '';
+    notificar(err.code === 1 ? 'Permiso de ubicación denegado. Actívalo en los ajustes del navegador.' : 'No se pudo obtener la ubicación.', 'error');
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+}
+
+async function enviarFicha(ev, confirmar) {
+  if (ev) ev.preventDefault();
+  const form = $('#f-ficha');
+  limpiarErrores(form);
+  if (!requeridos(form)) {
+    mensajeForm(form, 'Faltan datos obligatorios. Revisa los campos marcados.');
+    $('[aria-invalid="true"]', form).focus();
+    return;
+  }
+  const datos = {};
+  new FormData(form).forEach((v, k) => { if (typeof v === 'string') datos[k] = v; });
+  datos.confirmarDuplicado = confirmar === true;
+  const progreso = $('#ficha-progreso');
+
+  await conCarga($('button[type=submit]', form), async () => {
+    try {
+      progreso.hidden = false;
+      progreso.textContent = 'Guardando ficha…';
+      const r = await api('fichas.crear', datos);
+      if (r.data.requiereConfirmacion) {
+        progreso.hidden = true;
+        mostrarDuplicados(r.data.duplicados);
+        return;
+      }
+      const { idPersona, idExpediente, folio } = r.data;
+      const pendientes = Array.from(imagenesFicha.entries());
+      let fallidas = 0;
+      for (let i = 0; i < pendientes.length; i++) {
+        progreso.textContent = 'Ficha ' + folio + ' guardada. Subiendo imagen ' + (i + 1) + ' de ' + pendientes.length + '…';
+        try { await subirImagen(idExpediente, idPersona, pendientes[i][0], pendientes[i][1]); }
+        catch (e) { if (e.manejado) return; fallidas++; }
+      }
+      reiniciarFicha();
+      notificar(fallidas
+        ? 'Ficha ' + folio + ' guardada, pero ' + fallidas + ' imagen(es) no se subieron. Agrégalas desde la ficha.'
+        : 'Ficha ' + folio + ' guardada.', fallidas ? 'error' : 'exito');
+      abrirFicha(idPersona, idExpediente);
+    } catch (e) {
+      progreso.hidden = true;
+      mostrarError(form, e);
+    }
+  });
+}
+
+function mostrarDuplicados(lista) {
+  $('#lista-duplicados').replaceChildren(...lista.map(d => el('div', { class: 'fila' },
+    el('div', {},
+      el('div', { class: 'fila-nombre' }, d.restringido ? 'Registro fuera de tu alcance' : nombrePropio(d.nombre)),
+      el('div', { class: 'fila-datos' },
+        d.folio ? el('span', { class: 'num' }, d.folio) : null,
+        d.fechaNacimiento ? el('span', {}, 'Nació el ' + d.fechaNacimiento) : null,
+        el('span', {}, d.coincidencias.join(', ')))),
+    d.restringido ? null : el('div', { class: 'fila-acciones' },
+      el('button', { type: 'button', class: 'boton boton-fantasma boton-chico', onclick: () => { $('#dlg-duplicados').close(); abrirFicha(d.idPersona, d.idExpediente); } }, 'Ver ficha')))));
+  $('#dlg-duplicados').showModal();
+}
+
+// Vista de ficha (misma estructura que el reporte impreso)
+async function imagenArchivo(idArchivo) {
+  if (cacheImagenes.has(idArchivo)) return cacheImagenes.get(idArchivo);
+  const r = await api('archivos.contenido', { idArchivo }, { tiempo: 60000 });
+  const url = URL.createObjectURL(new Blob([bytesDeBase64(r.data.base64)], { type: r.data.mime }));
+  cacheImagenes.set(idArchivo, url);
+  return url;
+}
+
+function ponerImagen(contenedor, idArchivo, alt, extra) {
+  contenedor.replaceChildren(el('span', {}, 'Cargando imagen…'));
+  imagenArchivo(idArchivo)
+    .then(url => contenedor.replaceChildren(...[el('img', { src: url, alt }), extra].filter(Boolean)))
+    .catch(e => { if (!e.manejado) contenedor.replaceChildren(...[el('span', {}, 'No se pudo cargar la imagen.'), extra].filter(Boolean)); });
+}
+
+function botonAgregar(subtipo, texto) {
+  if (!Sesion.tiene('EXP_EDITAR')) return null;
+  return el('button', { type: 'button', class: 'hoja-agregar', onclick: () => { subtipoPendiente = subtipo; $('#in-ficha-archivo').click(); } }, texto);
+}
+
+function celda(etiqueta, valor, clase, attrs) {
+  return el('td', attrs || {}, el('div', { class: 'etq' }, etiqueta),
+    el('div', { class: clase || 'val' }, valor ? valor : el('span', { class: 'vacio-hoja' }, '—')));
+}
+
+async function abrirFicha(idPersona, idExpediente) {
+  mostrarPanel('ficha');
+  const hoja = $('#hoja');
+  hoja.replaceChildren(el('p', { class: 'hoja-cargando' }, 'Cargando ficha…'));
+  try {
+    const r = await api('fichas.obtener', { idPersona, idExpediente });
+    fichaActual = r.data;
+    pintarHoja(r.data);
+  } catch (e) {
+    if (!e.manejado) hoja.replaceChildren(el('p', { class: 'hoja-cargando' }, e.message));
+  }
+}
+
+function pintarHoja(d) {
+  const p = d.persona;
+  const inc = d.incidente;
+  const t = d.testigos[0] || {};
+
+  const foto = el('div', { class: 'hoja-foto' });
+  if (d.archivos.foto) ponerImagen(foto, d.archivos.foto, 'Fotografía de ' + nombrePropio(p.nombreCompleto), botonAgregar('CUERPO_COMPLETO', 'Cambiar fotografía'));
+  else foto.replaceChildren(...[el('span', {}, 'Sin fotografía'), botonAgregar('CUERPO_COMPLETO', 'Agregar fotografía')].filter(Boolean));
+
+  const huella = (id, subtipo, etiqueta) => {
+    const marco = el('div', { class: 'sin' });
+    if (id) ponerImagen(marco, id, etiqueta);
+    else marco.replaceChildren(...[el('span', {}, 'Sin registro'), botonAgregar(subtipo, 'Agregar')].filter(Boolean));
+    return el('td', { class: 'hoja-huella' }, marco, el('div', { class: 'etq-h' }, etiqueta));
+  };
+
+  const fechaNac = p.fechaNacimientoTexto ? p.fechaNacimientoTexto + (p.edad ? ' (' + p.edad + ' años)' : '') : '';
+  const tipo = [inc.tipo, inc.descripcion].filter(Boolean).join('. ');
+  const ubicacion = [inc.ubicacion, inc.municipio].filter(Boolean).join(', ');
+
+  $('#hoja').replaceChildren(
+    el('div', { class: 'hoja-enc' },
+      foto,
+      el('div', {},
+        el('div', { class: 'hoja-logos' },
+          el('img', { src: 'assets/reporte/grupo-antinarcoticos.png', alt: 'Grupo Antinarcóticos', class: 'logo-grupo' }),
+          el('img', { src: 'assets/reporte/policia-estatal-color.png', alt: 'Policía Estatal de Coahuila', class: 'logo-policia' })),
+        el('table', { class: 'hoja-tabla' },
+          el('tr', {}, el('th', { colspan: '2', class: 'izq' }, 'REPORTE DE PERSONA')),
+          el('tr', { class: 'gris' }, celda('Nombre completo', p.nombreCompleto), celda('Domicilio', d.domicilio && d.domicilio.texto, 'val-chico')),
+          el('tr', {}, celda('Fecha de nacimiento', fechaNac), celda('Número de teléfono', formatoCelular(p.telefono))),
+          (p.alias || p.curp) ? el('tr', { class: 'gris' }, celda('Alias', p.alias), celda('CURP', p.curp)) : null))),
+    el('table', { class: 'hoja-tabla' },
+      el('tr', {}, el('th', { colspan: '2' }, 'DETALLES DEL INCIDENTE')),
+      el('tr', {}, celda('Tipo de incidente', tipo, 'val-chico'), celda('Hora del incidente', inc.hora ? inc.hora + ' hrs' : '')),
+      el('tr', { class: 'gris' }, celda('Fecha del incidente', inc.fechaTexto), celda('Ubicación', ubicacion, 'val-chico'))),
+    el('table', { class: 'hoja-tabla' },
+      el('tr', {}, el('th', { colspan: '2' }, 'DATOS DEL TESTIGO')),
+      el('tr', {}, celda('Nombre', d.testigos.map(x => x.nombre).join('; ')), celda('Relación', t.relacion)),
+      el('tr', { class: 'gris' }, celda('Declaración', t.declaracion, 'declaracion', { colspan: '2' }))),
+    el('table', { class: 'hoja-tabla' },
+      el('tr', {}, el('th', { colspan: '2' }, 'HUELLAS DACTILARES')),
+      el('tr', {},
+        huella(d.archivos.huellaIzquierda, 'HUELLA_PULGAR_IZQ', 'PULGAR IZQUIERDO'),
+        huella(d.archivos.huellaDerecha, 'HUELLA_PULGAR_DER', 'PULGAR DERECHO'))),
+    el('p', { class: 'hoja-pie' },
+      'Folio ' + d.expediente.folio + '. Expediente ' + String(d.expediente.estado || '').toLowerCase() + '.',
+      d.otrosExpedientes.length ? el('span', {}, ' También aparece en: ',
+        ...d.otrosExpedientes.map((x, i) => el('span', {}, i ? ', ' : '', el('button', { type: 'button', class: 'enlace', onclick: () => abrirFicha(p.idPersona, x.idExpediente) }, x.folio)))) : null)
+  );
+}
+
+async function agregarArchivoFicha() {
+  const input = $('#in-ficha-archivo');
+  const archivo = input.files[0];
+  input.value = '';
+  if (!archivo || !fichaActual || !subtipoPendiente) return;
+  const subtipo = subtipoPendiente;
+  subtipoPendiente = null;
+  try {
+    notificar('Subiendo ' + ETIQUETA_SUBTIPO[subtipo] + '…');
+    const img = await procesarImagen(archivo);
+    await subirImagen(fichaActual.expediente.idExpediente, fichaActual.persona.idPersona, subtipo, img);
+    URL.revokeObjectURL(img.vista);
+    notificar('Se guardó la ' + ETIQUETA_SUBTIPO[subtipo] + '.', 'exito');
+    abrirFicha(fichaActual.persona.idPersona, fichaActual.expediente.idExpediente);
+  } catch (e) {
+    if (!e.manejado) notificar(e.message, 'error');
+  }
+}
+
+function descargarPdf(base64, nombre) {
+  const url = URL.createObjectURL(new Blob([bytesDeBase64(base64)], { type: 'application/pdf' }));
+  const a = el('a', { href: url, download: nombre });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function generarReporte(ev) {
+  const boton = ev.currentTarget;
+  if (!fichaActual) return;
+  await conCarga(boton, async () => {
+    try {
+      const r = await api('reportes.persona', { idPersona: fichaActual.persona.idPersona, idExpediente: fichaActual.expediente.idExpediente }, { tiempo: 120000 });
+      descargarPdf(r.data.base64, r.data.nombreArchivo);
+      notificar('Reporte versión ' + r.data.version + ' generado. Código de verificación ' + r.data.codigo + '.', 'exito');
+    } catch (e) {
+      if (!e.manejado) notificar(e.message, 'error');
+    }
+  });
+}
+
+function enlazarPersonas() {
+  $('#f-buscar').addEventListener('submit', ev => { ev.preventDefault(); cargarPersonas($('#buscar-persona').value.trim()); });
+  $('#buscar-persona').addEventListener('search', () => { if (!$('#buscar-persona').value) cargarPersonas(''); });
+  $('#f-ficha').addEventListener('submit', ev => enviarFicha(ev, false));
+  $$('#f-ficha .foto-slot').forEach(enlazarFotoSlot);
+  $('#btn-gps').addEventListener('click', obtenerUbicacion);
+  $('#btn-confirmar-nueva').addEventListener('click', () => { $('#dlg-duplicados').close(); enviarFicha(null, true); });
+  $('#in-ficha-archivo').addEventListener('change', agregarArchivoFicha);
+  $('#btn-reporte').addEventListener('click', generarReporte);
+}
+
 // ───────────────────────── Arranque ─────────────────────────
 
 function enlazarEventos() {
@@ -753,6 +1155,7 @@ function enlazarEventos() {
   });
 
   $('#inicio-solicitudes').addEventListener('click', () => mostrarPanel('solicitudes'));
+  enlazarPersonas();
   $('#buscar-usuario').addEventListener('input', pintarUsuarios);
 
   $$('ul.politica').forEach(ul => {

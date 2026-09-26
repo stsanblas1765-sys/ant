@@ -1,7 +1,7 @@
 // ANT — service worker.
 // Guarda solo la interfaz (HTML, CSS, JS, íconos, fuente) para que abra rápido y
 // sin señal. NUNCA guarda respuestas del servidor: los datos no quedan en caché.
-const VERSION = 'ant-v1.0.0';
+const VERSION = 'ant-v1.1.0';
 const ARCHIVOS = [
   './',
   './index.html',
@@ -17,7 +17,9 @@ const ARCHIVOS = [
   './assets/icons/icon-512.png',
   './assets/icons/maskable-512.png',
   './assets/icons/apple-touch-icon.png',
-  './assets/icons/favicon-64.png'
+  './assets/icons/favicon-64.png',
+  './assets/reporte/grupo-antinarcoticos.png',
+  './assets/reporte/policia-estatal-color.png'
 ];
 
 self.addEventListener('install', ev => {

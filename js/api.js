@@ -39,7 +39,7 @@ export async function llamar(accion, datos = {}, opciones = {}) {
   if (token) cuerpo.token = token;
 
   const control = new AbortController();
-  const temporizador = setTimeout(() => control.abort(), CONFIG.TIEMPO_ESPERA_MS);
+  const temporizador = setTimeout(() => control.abort(), opciones.tiempo || CONFIG.TIEMPO_ESPERA_MS);
   let respuesta;
   try {
     respuesta = await fetch(CONFIG.API_URL, {
@@ -53,7 +53,7 @@ export async function llamar(accion, datos = {}, opciones = {}) {
     });
   } catch (e) {
     if (e.name === 'AbortError') throw new ErrorApi('TIEMPO_AGOTADO', 'El servidor tardó demasiado en responder. Intenta de nuevo.');
-    throw new ErrorApi('SIN_CONEXION', 'No se pudo conectar con el servidor. Revisa tu conexión e intenta de nuevo.');
+    throw new ErrorApi('SIN_CONEXION', 'No se pudo conectar con el servidor. Revisa tu conexión e intenta de nuevo. (Detalle: ' + (e.name || 'Error') + ': ' + (e.message || 'sin mensaje') + ')');
   } finally {
     clearTimeout(temporizador);
   }
